@@ -1,0 +1,60 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "training",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+
+            "args": [
+                "--clip_path", "/home/user003/ELITE-main/ckpt/clip/clip-vit-large-patch14/",
+                "--vae_path", "/home/user003/ELITE-main/ckpt/vae",
+                "--unet_path", "/home/user003/ELITE-main/ckpt/unet",
+                "--ddim_path", "/home/user003/ELITE-main/ckpt/DDIM",
+                "--train_data_dir", "./datasets/human_images/images",
+                "--placeholder_token", "S*",
+                "--resolution", "512",
+                "--train_batch_size", "4",
+                "--gradient_accumulation_steps", "4", 
+                "--max_train_steps", "100000", 
+                "--learning_rate", "1e-06", 
+                "--scale_lr",  
+                "--lr_scheduler", "cosine", 
+                "--lr_warmup_steps", "0", 
+                "--output_dir", "./elite_experiments/output", 
+                "--save_steps", "5000",
+                "--global_mapper_path", "elite_experiments/output/mapper_020000.pt",
+                "--local_mapper_path", "elite_experiments/output/mapper_local_020000.pt",
+            ]
+        },
+
+        {
+            "name": "inference",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+
+            "args": [
+                "--vae_path", "/home/user003/ELITE-main/ckpt/vae",
+                "--unet_path", "/home/user003/ELITE-main/ckpt/unet",
+                "--test_data_dir", "/home/user003/ELITE-main/test_datasets/",
+                "--output_dir", "/home/user003/ELITE-main/output/",
+                "--suffix", "object",
+                "--token_index", "0",
+                "--template", "S* with Eiffel Tower in the background",
+                "--global_mapper_path", "elite_experiments/output/mapper_020000.pt",
+                "--local_mapper_path", "elite_experiments/output/mapper_local_020000.pt",
+                "--seed", "42",
+                "--llambda", "0.6",
+            ]
+        }
+    ]
+}
