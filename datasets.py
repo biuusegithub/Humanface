@@ -12,36 +12,11 @@ import albumentations as A
 import copy
 import cv2
 import pandas as pd
+import json
 
 
 imagenet_templates_small = [
-    "a photo of a {}",
-    "a rendering of a {}",
-    "a cropped photo of the {}",
-    "the photo of a {}",
-    "a photo of a clean {}",
-    "a photo of a dirty {}",
-    "a dark photo of the {}",
-    "a photo of my {}",
-    "a photo of the cool {}",
-    "a close-up photo of a {}",
-    "a bright photo of the {}",
-    "a cropped photo of a {}",
-    "a photo of the {}",
-    "a good photo of the {}",
-    "a photo of one {}",
-    "a close-up photo of the {}",
-    "a rendition of the {}",
-    "a photo of the clean {}",
-    "a rendition of a {}",
-    "a photo of a nice {}",
-    "a good photo of a {}",
-    "a photo of the nice {}",
-    "a photo of the small {}",
-    "a photo of the weird {}",
-    "a photo of the large {}",
-    "a photo of a cool {}",
-    "a photo of a small {}",
+    "a photo of a {}"
 ]
 
 
@@ -64,6 +39,7 @@ else:
 
 def is_image(file):
     return 'jpg' in file.lower()  or 'png' in file.lower()  or 'jpeg' in file.lower()
+
 
 class CustomDatasetWithBG(Dataset):
     def __init__(
@@ -165,15 +141,19 @@ class CustomDatasetWithBG(Dataset):
         return example
 
 
+
 class OpenImagesDataset(Dataset):
     def __init__(
         self,
         data_root,
         tokenizer,
-        size=256,
+        size=512,
         interpolation="bicubic",
         set="train",
-        placeholder_token="*",
+        placeholder_token="human",
+        mask_name = "mask",
+        jsonl_name = "captions.jsonl",
+        is_training = True
     ):
         self.data_root = data_root
         self.tokenizer = tokenizer
@@ -184,16 +164,22 @@ class OpenImagesDataset(Dataset):
         self.random_trans = A.Compose([
             A.Resize(height=224, width=224),
             A.HorizontalFlip(p=0.5),
-            A.Rotate(limit=20),
-            A.Blur(p=0.3),
-            A.ElasticTransform(p=0.3)
+            # A.Rotate(limit=20),
+            # A.Blur(p=0.3),
+            # A.ElasticTransform(p=0.3)
         ])
 
         self.image_roots = os.path.join(self.data_root, set)
-        self.image_paths = os.listdir(self.image_roots)
-        self.num_images = len(self.image_paths)
+        self.image_masks = os.path.join(self.data_root, mask_name)
 
-        print('{}: total {} images ...'.format(set, self.num_images))
+        self.image_paths = os.listdir(self.image_roots)
+        self.mask_paths = os.listdir(self.image_masks)
+
+        self.num_images = len(self.image_paths)
+        self.num_masks = len(self.mask_paths)
+
+        print('{}: image {} images ...'.format(set, self.num_images))
+        print('{}: mask {} images ...'.format(set, self.num_masks))
 
         self._length = self.num_images
 
@@ -205,6 +191,11 @@ class OpenImagesDataset(Dataset):
         }[interpolation]
 
         self.templates = imagenet_templates_small
+
+        self.jsonl_file_path = os.path.join(self.data_root, jsonl_name)
+        self.data = self.read_jsonl()
+
+        self.training = is_training
 
 
     def __len__(self):
@@ -236,6 +227,7 @@ class OpenImagesDataset(Dataset):
         text = random.choice(self.templates).format(placeholder_string)
         text = add_caption + text[1:]
 
+        # 根据 attention_mask [1, 1, 1, 1, 1, 1, 1, 0...] 可知其对应的text['start', 'a', 'photo', 'of', 'a', 'S*', 'end'], 所以伪词的下标(placeholder_index)为5
         placeholder_index = 0
         words = text.strip().split(' ')
         for idx, word in enumerate(words):
@@ -251,27 +243,83 @@ class OpenImagesDataset(Dataset):
             max_length=self.tokenizer.model_max_length,
             return_tensors="pt",
         ).input_ids[0]
+
         return input_ids, index, text
+
+    def obtain_jsonl_text(self, text, object_category=None):
+
+        # 根据 attention_mask [1, 1, 1, 1, 1, 1, 1, 0...] 可知其对应的text['start', 'a', 'photo', 'of', 'a', 'S*', 'end'], 所以伪词的下标(placeholder_index)为5
+        placeholder_index = 0
+        words = text.strip().split(' ')
+        placeholder_string = self.placeholder_token
+
+        for idx, word in enumerate(words):
+            if word == 'man' or word == 'woman' or word == 'girl' or word == 'boy':
+                placeholder_index = idx + 1
+                placeholder_string = word
+                break
+
+        index = torch.tensor(placeholder_index)
+
+        input_ids = self.tokenizer(
+            text,
+            padding="max_length",
+            truncation=True,
+            max_length=self.tokenizer.model_max_length,
+            return_tensors="pt",
+        ).input_ids[0]
+
+        return input_ids, index, text, placeholder_string
+    
+    def read_jsonl(self):
+        data = []
+        with open(self.jsonl_file_path, 'r') as jsonl_file:
+            for line in jsonl_file:
+                json_object = json.loads(line.strip())
+                data.append(json_object)
+        return data
 
     def __getitem__(self, i):
         example = {}
 
-        input_ids, index, text = self.obtain_text('a')
+        # input_ids, index, text = self.obtain_text('a')
+        # example["input_ids"] = input_ids
+        # example["index"] = index
+        # example["text"] = text
+
+        # image = Image.open(os.path.join(self.image_roots, self.image_paths[i % self.num_images]))
+        # mask = Image.open(os.path.join(self.image_masks, self.image_paths[i % self.num_images]))
+
+        image = Image.open(self.data[i]['raw_path'])
+        mask = Image.open(self.data[i]['mask_path'])
+
+        input_ids, index, text, placeholder_string = self.obtain_jsonl_text(self.data[i % self.num_images]['cation'])
         example["input_ids"] = input_ids
         example["index"] = index
         example["text"] = text
-
-        image = Image.open(os.path.join(self.image_roots, self.image_paths[i % self.num_images]))
+        example["placeholder_string"] = placeholder_string
 
         if not image.mode == "RGB":
             image = image.convert("RGB")
         
-        image_tensor = np.array(image).astype(np.uint8)
+        # 图像分割和归一化处理，否则像素值会溢出
+        if self.training:
+            image_tensor = np.array(image) / 255
+            mask_tensor = np.array(mask) / 255
+            mask_tensor = np.where(mask_tensor > 0, 1, 0)
+            
+            image_tensor = image_tensor * mask_tensor
+            image_tensor = (image_tensor * 255).astype(np.uint8)
+        else:
+            image_tensor = np.array(image).astype(np.uint8)
+
         example["pixel_values"] = self.process(image_tensor)
 
         ref_image_tensor = self.random_trans(image=image_tensor)
         ref_image_tensor = Image.fromarray(ref_image_tensor["image"])
         example["pixel_values_clip"] = self.get_tensor_clip()(ref_image_tensor)
+
+        example["mask"] = mask_tensor
 
         return example
 
