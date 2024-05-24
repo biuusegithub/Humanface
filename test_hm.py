@@ -37,29 +37,6 @@ from datasets import OpenImagesDataset
 from timm.models.vision_transformer import Attention, Mlp
 
 
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-
-class DiTBlock(nn.Module):
-    def __init__(self, hidden_size, mlp_ratio=4.0):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 3 * hidden_size, bias=True)
-        )
-
-
-    def forward(self, x, c):
-        bsz, seq, dim = x.shape
-        shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c.view(-1, dim)).chunk(3, dim=1)
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm1(x), shift_mlp, scale_mlp))
-        return x
-
-
 # Text Adapter
 class Mapper(nn.Module):
     def __init__(self,
@@ -372,10 +349,6 @@ def parse_args():
         help="If not none, the training will start from the given checkpoints."
     )
     parser.add_argument(
-        "--dit_path", type=str, default=None,
-        help="If not none, the training will start from the given checkpoints."
-    )
-    parser.add_argument(
         "--placeholder_token",
         type=str,
         default=None,
@@ -507,7 +480,7 @@ def th2image(image):
 
 
 @torch.no_grad()
-def validation(example, tokenizer, image_encoder, text_encoder, unet, mapper, mapper_local, dit, vae, device, guidance_scale, token_index=0, seed=42, llambda=1):
+def validation(example, tokenizer, image_encoder, text_encoder, unet, mapper, mapper_local, vae, device, guidance_scale, token_index=0, seed=42, llambda=1):
     scheduler = DPMSolverMultistepScheduler(
         beta_start=0.00085,
         beta_end=0.012,
@@ -558,7 +531,6 @@ def validation(example, tokenizer, image_encoder, text_encoder, unet, mapper, ma
                                               "inj_embedding": inj_embedding_first_word,
                                               "inj_index": placeholder_idx})[0]                                
 
-    encoder_hidden_states = dit(encoder_hidden_states, inj_embedding_local[:, 0:1, :])
 
     for t in tqdm(scheduler.timesteps):
         latent_model_input = scheduler.scale_model_input(latents, t).to("cuda")
@@ -687,8 +659,6 @@ def main():
                 _module.add_module('to_k_local', getattr(mapper_local, f'{_name.replace(".", "_")}_to_k'))
                 _module.add_module('to_v_local', getattr(mapper_local, f'{_name.replace(".", "_")}_to_v'))
 
-    if args.dit_path is not None:
-        dit.load_state_dict(torch.load(args.dit_path, map_location='cpu'))
 
     # Freeze vae and unet, encoder
     freeze_params(vae.parameters())
@@ -699,7 +669,6 @@ def main():
     # Unfreeze the mapper
     unfreeze_params(mapper.parameters())
     unfreeze_params(mapper_local.parameters())
-    unfreeze_params(dit.parameters())
 
     if args.scale_lr:
         args.learning_rate = (
@@ -709,7 +678,6 @@ def main():
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(
         [
-            {"params": dit.parameters(), "lr": 1e-04},
             {"params": itertools.chain(mapper.parameters(), mapper_local.parameters()), "lr": args.learning_rate},
         ],
         lr=args.learning_rate,
@@ -765,7 +733,6 @@ def main():
     text_encoder.to("cuda")
     mapper.to("cuda")
     mapper_local.to("cuda")
-    dit.to("cuda")
     
     # Keep vae, unet and image_encoder in eval model as we don't train these
     vae.eval()
@@ -800,7 +767,6 @@ def main():
     for epoch in range(args.num_train_epochs):
         mapper.train()
         mapper_local.train()
-        dit.train()
 
         for batch in train_dataloader:
 
@@ -859,9 +825,6 @@ def main():
                     encoder_hidden_states = text_encoder({'input_ids': batch["input_ids"].to("cuda"),
                                                           "inj_embedding": inj_embedding,
                                                           "inj_index": placeholder_idx.detach()})[0]
-
-                # scaling tokens
-                encoder_hidden_states = dit(encoder_hidden_states, inj_embedding_local[:, 0:1, :])
                 
                 # noise_pred: (4, 4, 64, 64)
                 noise_pred = unet(noisy_latents, timesteps, encoder_hidden_states={
@@ -895,12 +858,11 @@ def main():
             if global_step % args.save_steps == 0:
                 save_progress(mapper, args, "mapper", global_step)
                 save_progress(mapper_local, args, "mapper_local", global_step)
-                save_progress(dit, args, "dit", global_step)
                 if global_step < 50000:
-                    syn_images = validation(batch, tokenizer, image_encoder, text_encoder, unet, mapper, mapper_local, dit, vae, batch["pixel_values_clip"].device, 5)
+                    syn_images = validation(batch, tokenizer, image_encoder, text_encoder, unet, mapper, mapper_local, vae, batch["pixel_values_clip"].device, 5)
                     gt_images = [th2image(img) for img in batch["pixel_values"]]
                 else:
-                    syn_images = validation(batch_valid, tokenizer, image_encoder, text_encoder, unet, mapper, mapper_local, dit, vae, batch["pixel_values_clip"].device, 5)
+                    syn_images = validation(batch_valid, tokenizer, image_encoder, text_encoder, unet, mapper, mapper_local, vae, batch["pixel_values_clip"].device, 5)
                     gt_images = [th2image(img) for img in batch_valid["pixel_values"]]
                 
                 img_list = []
