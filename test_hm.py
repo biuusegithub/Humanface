@@ -599,9 +599,6 @@ def main():
     mapper = Mapper(input_dim=1024, output_dim=768)
     mapper_local = MapperLocal(input_dim=1024, output_dim=768)
 
-    # scaling
-    dit = DiTBlock(hidden_size=768)
-
     version2 = args.vae_path
     vae = AutoencoderKL.from_pretrained(version2)
 
